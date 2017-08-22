@@ -1,32 +1,88 @@
 #!/usr/bin/env ruby
 
 require 'csv'
+require 'highline'
 require 'pp'
 
-module Parsing
-  # https://stackoverflow.com/a/26131816/351149
-  def self.struct_from_hash(struct_class, hash)
-    struct_class.new(*hash.values_at(*struct_class.members))
+class WordStruct < Struct
+  def formatted
+    typename = self.class.name.gsub("Result", "").downcase
+    "  <%= color(#{typename.inspect}, GREEN) %>:\n  #{format_content.gsub("\n", "\n  ")}"
   end
 
+  def self.from_h(hash)
+    # https://stackoverflow.com/a/26131816/351149
+    new(*hash.values_at(*members))
+  end
+end
+
+module Parsing
   def self.parse_dict_file(struct_class, path, cols)
     r = {}
 
     CSV.foreach(path, col_sep: "\t", quote_char: "\x00") do |raw_row|
       row = cols.zip(raw_row).to_h
       key, values_hash = yield row
-      r[key] = struct_from_hash(struct_class, values_hash)
+      r[key] = struct_class.from_h(values_hash)
     end
 
     r
   end
 end
 
-class LojbanDict
-  Gismu = Struct.new(:word, :rafsis, :gloss, :definition)
-  Cmavo = Struct.new(:word, :selmaho, :gloss, :definition, :rafsis)
-  Rafsi = Struct.new(:rafsi, :word)
+Gismu = WordStruct.new(:word, :rafsis, :gloss, :definition) do
+  def name; word; end
 
+  def format_content
+    definition
+  end
+end
+
+Cmavo = WordStruct.new(:word, :selmaho, :gloss, :definition, :rafsis) do
+  def name; word; end
+
+  def format_content
+    definition
+  end
+end
+
+Rafsi = WordStruct.new(:rafsi, :word) do
+  def name; rafsi; end
+
+  def format_content
+    word.formatted.gsub("\n", "\n  ")
+  end
+end
+
+Gloss = WordStruct.new(:gloss, :word) do
+  def name; gloss; end
+
+  def format_content
+    word.formatted.gsub("\n", "\n  ")
+  end
+end
+
+LujvoResult = WordStruct.new(:word, :parts) do
+  def name; word; end
+
+  def format_content
+    desc = parts.map do |part, word|
+      "<%= color(#{part.inspect}, YELLOW) %>:\n#{word.formatted.gsub("\n", "\n  ")}"
+    end
+    
+    desc.join("\n")
+  end
+end
+
+SelmahoResult = WordStruct.new(:selmaho, :words) do
+  def name; selmaho; end
+
+  def format_content
+    "SELMAHO"
+  end
+end
+
+class LojbanDict
   attr_reader :gihuste, :mahoste, :selmahoste, :rafste, :glosses
 
   def initialize(dir)
@@ -57,51 +113,115 @@ class LojbanDict
       ]
     end
 
-    @selmahoste = Hash.new{ |h, k| h[k] = [] }
+    @selmahoste = {}
     mahoste.values.each do |cmavo|
+      selmahoste[cmavo.selmaho] ||= []
       selmahoste[cmavo.selmaho].push cmavo
     end
 
-    @glosses = Hash.new{ |h, k| h[k] = [] }
+    @glosses = {}
     [mahoste.values, gihuste.values].each do |words|
       words.each do |word|
-        glosses[word.gloss].push word
+        glosses[word.gloss] ||= []
+        glosses[word.gloss].push Gloss.new(word.gloss, word)
       end
     end
   end
 
-  def decompose_lujvo(lujvo)
-    lujvo = lujvo.gsub("y", "")
+  def query(input)
+    input = input.strip
+    first_char = input[0, 1]
+    if first_char == "/"
+      query_definition_regex(input)
+    elsif first_char =~ /[A-Z]/
+      query_selmaho(input)
+    else
+      query_word(input)
+    end
+  end
 
-    return [] if lujvo.length < 3
+  private
+
+  def query_definition_regex(input)
+  end
+
+  def query_selmaho(input)
+    input = input.upcase.gsub("H", "h")
+    selmaho = selmahoste[input]
+    selmaho.nil? ? [] : [SelmahoResult.new(input, selmaho)]
+  end
+
+  def query_word(input)
+    input = input.downcase
+    results = [gihuste[input], mahoste[input], rafste[input], glosses[input]].compact
+    results = [query_lujvo(input)].compact if results.empty?
+    return results
+  end
+
+  def query_lujvo(input)
+    parts = decompose_lujvo(input)
+    parts.nil? ? nil : LujvoResult.new(input, parts)
+  end
+
+  def decompose_lujvo(input)
+    input = input.gsub("y", "")
+
+    return [] if input.empty?
+    return nil if input.length < 3
 
     # Full gismu at end of word
-    gismu = gihuste[lujvo]
-    return [[lujvo, gismu]] if gismu
+    gismu = gihuste[input]
+    return [[input, gismu]] if gismu
 
     # Regular 4-letter or 3-letter rafsi
     [4, 3].each do |rafsi_length|
-      next unless lujvo.length >= rafsi_length
+      next unless input.length >= rafsi_length
 
-      rafsi = rafste[lujvo[0, rafsi_length]]
+      rafsi = rafste[input[0, rafsi_length]]
       next unless rafsi
 
       r = [[rafsi.rafsi, rafsi.word]]
-      return r if lujvo.length == rafsi_length
+      return r if input.length == rafsi_length
 
-      rest = decompose_lujvo(lujvo[rafsi_length, lujvo.length])
-      return r + rest unless rest.empty?
+      rest = decompose_lujvo(input[rafsi_length, input.length])
+      return r + rest unless rest.nil?
     end
 
     # Hyphen r or hyphen n
-    if ["r", "n"].include?(lujvo[0, 1])
-      return decompose_lujvo(lujvo[1, lujvo.length])
+    if ["r", "n"].include?(input[0, 1])
+      return decompose_lujvo(input[1, input.length])
     end
 
     # Invalid lujvo
-    return []
+    return nil
+  end
+end
+
+class UserInterface
+  def initialize(dict)
+    @dict = dict
+    @cli = HighLine.new
+  end
+
+  def run
+  end
+
+  def handle(input)
+    result = @dict.query(input)
+    output = "<%= color(#{input.inspect}, WHITE) %>:\n#{format(result)}"
+    @cli.say output
+  end
+
+  def format(result)
+    return "<%= color('No results found', RED) %>" if result.empty?
+    result.map{|r| r.formatted.gsub("\n", "\n  ") }.join("\n\n")
   end
 end
 
 dict = LojbanDict.new(File.dirname(__FILE__))
-pp dict.decompose_lujvo("pavyseljirna")
+ui = UserInterface.new(dict)
+if ARGV.length > 0
+  ui.handle(ARGV.join(" "))
+else
+  ui.run
+end
