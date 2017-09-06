@@ -4,10 +4,16 @@ require 'csv'
 require 'highline'
 require 'pp'
 
+class String
+  def indented(n = 2)
+    gsub("\n", "\n#{' ' * n}")
+  end
+end
+
 class WordStruct < Struct
   def formatted
     typename = self.class.name.gsub("Result", "").downcase
-    "  <%= color(#{typename.inspect}, GREEN) %>:\n  #{format_content.gsub("\n", "\n  ")}"
+    "  <%= color(#{typename.inspect}, GREEN) %>:\n  #{format_content.indented}"
   end
 
   def self.from_h(hash)
@@ -34,15 +40,15 @@ Gismu = WordStruct.new(:word, :rafsis, :gloss, :definition) do
   def name; word; end
 
   def format_content
-    definition
+    "#{definition.gsub(/\s*;\s*/, "\n; ")}\nrafsi: #{rafsis.join(', ')}"
   end
 end
 
 Cmavo = WordStruct.new(:word, :selmaho, :gloss, :definition, :rafsis) do
-  def name; word; end
+  def name; word.sub(/^\./, ''); end
 
   def format_content
-    definition
+    "#{definition}\nselmaho: #{selmaho}"
   end
 end
 
@@ -50,15 +56,26 @@ Rafsi = WordStruct.new(:rafsi, :word) do
   def name; rafsi; end
 
   def format_content
-    word.formatted.gsub("\n", "\n  ")
+    "<%= color(#{word.name.inspect}, YELLOW) %>:\n#{word.formatted.indented}"
   end
 end
 
-Gloss = WordStruct.new(:gloss, :word) do
+Gloss = WordStruct.new(:gloss, :words) do
   def name; gloss; end
 
   def format_content
-    word.formatted.gsub("\n", "\n  ")
+    words.map do |word|
+      "<%= color(#{word.name.inspect}, YELLOW) %>:\n#{word.formatted.indented}"
+    end.join("\n")
+  end
+end
+
+Selmaho = WordStruct.new(:selmaho, :words) do
+  def name; selmaho; end
+
+  def format_content
+    formatted_words = words.map{|cmavo| "#{cmavo.name} - #{cmavo.definition}" }
+    "<%= color(#{selmaho.inspect}, YELLOW) %>:\n#{formatted_words.map(&:indented).join("\n")}"
   end
 end
 
@@ -66,19 +83,9 @@ LujvoResult = WordStruct.new(:word, :parts) do
   def name; word; end
 
   def format_content
-    desc = parts.map do |part, word|
-      "<%= color(#{part.inspect}, YELLOW) %>:\n#{word.formatted.gsub("\n", "\n  ")}"
-    end
-    
-    desc.join("\n")
-  end
-end
-
-SelmahoResult = WordStruct.new(:selmaho, :words) do
-  def name; selmaho; end
-
-  def format_content
-    "SELMAHO"
+    parts.map do |part, word|
+      "<%= color(#{part.inspect}, YELLOW) %>:\n#{word.formatted.indented}"
+    end.join("\n")
   end
 end
 
@@ -95,7 +102,7 @@ class LojbanDict
     
     @mahoste = Parsing.parse_dict_file(Cmavo, "#{dir}/cmavo.dat", %i(word selmaho gloss definition)) do |row|
       [
-        row[:word],
+        row[:word].sub(/^\./, ''),
         row.merge(rafsis: [])
       ]
     end
@@ -115,15 +122,15 @@ class LojbanDict
 
     @selmahoste = {}
     mahoste.values.each do |cmavo|
-      selmahoste[cmavo.selmaho] ||= []
-      selmahoste[cmavo.selmaho].push cmavo
+      selmahoste[cmavo.selmaho] ||= Selmaho.new(cmavo.selmaho, [])
+      selmahoste[cmavo.selmaho].words.push cmavo
     end
 
     @glosses = {}
     [mahoste.values, gihuste.values].each do |words|
       words.each do |word|
-        glosses[word.gloss] ||= []
-        glosses[word.gloss].push Gloss.new(word.gloss, word)
+        glosses[word.gloss] ||= Gloss.new(word.gloss, [])
+        glosses[word.gloss].words.push word
       end
     end
   end
@@ -146,13 +153,18 @@ class LojbanDict
   end
 
   def query_selmaho(input)
-    input = input.upcase.gsub("H", "h")
+    input = input.upcase.gsub("'", "h").gsub("H", "h")
     selmaho = selmahoste[input]
-    selmaho.nil? ? [] : [SelmahoResult.new(input, selmaho)]
+    return [selmaho] if selmaho
+
+    cmavo = mahoste[input.downcase.gsub("h", "'")]
+    return [selmahoste[cmavo.selmaho]] if cmavo
+
+    return []
   end
 
   def query_word(input)
-    input = input.downcase
+    input = input.downcase.sub(/^\./, '')
     results = [gihuste[input], mahoste[input], rafste[input], glosses[input]].compact
     results = [query_lujvo(input)].compact if results.empty?
     return results
@@ -214,14 +226,14 @@ class UserInterface
 
   def format(result)
     return "<%= color('No results found', RED) %>" if result.empty?
-    result.map{|r| r.formatted.gsub("\n", "\n  ") }.join("\n\n")
+    result.map{|r| r.formatted.indented }.join("\n\n")
   end
 end
 
 dict = LojbanDict.new(File.dirname(__FILE__))
 ui = UserInterface.new(dict)
 if ARGV.length > 0
-  ui.handle(ARGV.join(" "))
+  ARGV.each{|arg| ui.handle(arg); puts }
 else
   ui.run
 end
