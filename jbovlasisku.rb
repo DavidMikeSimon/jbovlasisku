@@ -2,6 +2,7 @@
 
 require 'csv'
 require 'highline'
+require 'readline'
 require 'pp'
 
 class String
@@ -216,6 +217,11 @@ class UserInterface
   end
 
   def run
+    puts "(CTRL-D to exit)"
+
+    while line = Readline.readline("\nJBO> ", true)
+      line.strip.split.each{|input| handle(input) }
+    end
   end
 
   def handle(input)
