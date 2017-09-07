@@ -44,7 +44,8 @@ Gismu = WordStruct.new(:word, :rafsis, :gloss, :definition) do
 
   def format_content
     formatted_def = definition.gsub(/\s*((?:; \(cf|;|\(cf)\s*)/, "\n\\1")
-    "#{formatted_def}\nrafsi: #{rafsis.join(', ')}"
+    rafsis_def = rafsis.empty? ? nil : "rafsi: #{rafsis.join(', ')}"
+    [formatted_def, rafsis_def].compact.join("\n")
   end
 end
 
@@ -219,6 +220,8 @@ class UserInterface
   end
 
   def run
+    puts
+    puts "Jbovlaste"
     puts "(CTRL-D to exit)"
 
     while line = Readline.readline("\nJBO> ", true)
