@@ -3,18 +3,20 @@
 require 'csv'
 require 'highline'
 require 'readline'
+require 'to_regexp'
 require 'pp'
 
 class String
   def indented(n = 2)
-    gsub("\n", "\n#{' ' * n}")
+    space = ' ' * n
+    space + gsub("\n", "\n#{space}")
   end
 end
 
 class WordStruct < Struct
   def formatted
     typename = self.class.name.gsub("Result", "").downcase
-    "  <%= color(#{typename.inspect}, GREEN) %>:\n  #{format_content.indented}"
+    "<%= color(#{typename.inspect}, GREEN) %> <%= color(#{name.inspect}, YELLOW) %>:\n#{format_content.indented}"
   end
 
   def self.from_h(hash)
@@ -38,15 +40,16 @@ module Parsing
 end
 
 Gismu = WordStruct.new(:word, :rafsis, :gloss, :definition) do
-  def name; word; end
+  def name; "#{word} (#{gloss})"; end
 
   def format_content
-    "#{definition.gsub(/\s*;\s*/, "\n; ")}\nrafsi: #{rafsis.join(', ')}"
+    formatted_def = definition.gsub(/\s*((?:; \(cf|;|\(cf)\s*)/, "\n\\1")
+    "#{formatted_def}\nrafsi: #{rafsis.join(', ')}"
   end
 end
 
 Cmavo = WordStruct.new(:word, :selmaho, :gloss, :definition, :rafsis) do
-  def name; word.sub(/^\./, ''); end
+  def name; "#{word.sub(/^\./, '')} (#{gloss})"; end
 
   def format_content
     "#{definition}\nselmaho: #{selmaho}"
@@ -57,7 +60,7 @@ Rafsi = WordStruct.new(:rafsi, :word) do
   def name; rafsi; end
 
   def format_content
-    "<%= color(#{word.name.inspect}, YELLOW) %>:\n#{word.formatted.indented}"
+    word.formatted
   end
 end
 
@@ -65,9 +68,7 @@ Gloss = WordStruct.new(:gloss, :words) do
   def name; gloss; end
 
   def format_content
-    words.map do |word|
-      "<%= color(#{word.name.inspect}, YELLOW) %>:\n#{word.formatted.indented}"
-    end.join("\n")
+    words.map(&:formatted).join("\n")
   end
 end
 
@@ -75,8 +76,7 @@ Selmaho = WordStruct.new(:selmaho, :words) do
   def name; selmaho; end
 
   def format_content
-    formatted_words = words.map{|cmavo| "#{cmavo.name} - #{cmavo.definition}" }
-    "<%= color(#{selmaho.inspect}, YELLOW) %>:\n#{formatted_words.map(&:indented).join("\n")}"
+    words.map{|cmavo| "<%= color(#{cmavo.name.inspect}, YELLOW) %> - #{cmavo.definition}" }.join("\n")
   end
 end
 
@@ -151,6 +151,8 @@ class LojbanDict
   private
 
   def query_definition_regex(input)
+    regex = input.to_regexp(detect: true)
+    [gihuste, mahoste].map(&:values).flatten(1).select{|word| regex.match(word.definition) }
   end
 
   def query_selmaho(input)
@@ -220,19 +222,18 @@ class UserInterface
     puts "(CTRL-D to exit)"
 
     while line = Readline.readline("\nJBO> ", true)
-      line.strip.split.each{|input| handle(input) }
+      line.strip.split.each{|input| handle(input); puts }
     end
   end
 
   def handle(input)
     result = @dict.query(input)
-    output = "<%= color(#{input.inspect}, WHITE) %>:\n#{format(result)}"
-    @cli.say output
+    @cli.say format(result)
   end
 
   def format(result)
     return "<%= color('No results found', RED) %>" if result.empty?
-    result.map{|r| r.formatted.indented }.join("\n\n")
+    result.map{|r| r.formatted }.join("\n\n")
   end
 end
 
